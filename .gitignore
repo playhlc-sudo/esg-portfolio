@@ -9,3 +9,12 @@ nul
 .DS_Store
 Thumbs.db
 user_settings.json
+
+# Firebase credentials (보안)
+firebase_credentials.json
+**/firebase_credentials.json
+serviceAccountKey.json
+**/serviceAccountKey.json
+
+# Secrets
+.streamlit/secrets.toml

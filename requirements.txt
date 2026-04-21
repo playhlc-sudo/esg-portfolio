@@ -7,3 +7,11 @@ plotly
 scikit-learn
 hmmlearn
 scipy
+pykrx
+
+# Authentication & Database
+streamlit-authenticator>=0.3.0
+firebase-admin>=6.0.0
+python-dotenv>=1.0.0
+bcrypt>=4.0.0
+pyyaml>=6.0

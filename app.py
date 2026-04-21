@@ -3,43 +3,32 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
-import json, os, traceback
+import traceback
 from backtest import run_backtest, predict_future, get_esg_scores, optimize_layer_weights
 from rebalance_engine import calculate_optimal_weights, generate_rebalance_orders, calculate_expected_performance
 from news_engine import get_market_pulse, analyze_news_impact_on_portfolio
+from auth import check_authentication, show_user_info_sidebar
+from settings_manager import get_settings_manager
+from stock_utils import parse_tickers_input, format_ticker_display, get_ticker_name
 
 st.set_page_config(page_title="ESG Portfolio Backtest", layout="wide")
+
+# 인증 체크 (로그인 안 된 경우 여기서 중단)
+if not check_authentication():
+    st.stop()
+
+# 사이드바에 사용자 정보 표시
+show_user_info_sidebar()
+
 st.title("ESG 포트폴리오 백테스트 대시보드")
 
-SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_settings.json")
-
-def load_settings():
-    defaults = {
-        "tickers_input": "BBAI, VRT, TSLL, 132030.KS, 476800.KS, 144600.KS",
-        "start_date": "2020-01-01",
-        "end_date": "2025-01-01",
-        "initial_capital": 100000,
-        "esg_scores": {},
-        "rebalance_freq": "M",
-        "tx_cost": 0.1,
-    }
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-            defaults.update(saved)
-        except Exception:
-            pass
-    return defaults
+# 사용자별 설정 관리자
+settings_manager = get_settings_manager(st.session_state.current_user)
+settings = settings_manager.load_settings()
 
 def save_settings(data):
-    try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-settings = load_settings()
+    """설정 저장 (settings_manager 사용)"""
+    settings_manager.save_settings(data)
 
 if "backtest_result" not in st.session_state:
     st.session_state.backtest_result = None
@@ -53,8 +42,26 @@ if "pred_tickers" not in st.session_state:
     st.session_state.pred_tickers = []
 
 st.sidebar.header("설정")
-tickers_input = st.sidebar.text_input("종목 (쉼표 구분)", settings["tickers_input"])
-tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+tickers_input = st.sidebar.text_input(
+    "종목 (쉼표 구분)",
+    settings["tickers_input"],
+    help="종목명(삼성전자) 또는 코드(005930.KS) 입력 가능"
+)
+
+# 종목 파싱 (종목명 → 코드 자동 변환)
+ticker_info_list = parse_tickers_input(tickers_input)
+tickers = [t["code"] for t in ticker_info_list]
+ticker_names = {t["code"]: t["name"] for t in ticker_info_list}
+
+# 세션에 종목명 매핑 저장 (다른 곳에서 사용)
+if "ticker_names" not in st.session_state:
+    st.session_state.ticker_names = {}
+st.session_state.ticker_names.update(ticker_names)
+
+# 인식된 종목 표시
+if ticker_info_list:
+    display_tickers = [format_ticker_display(t["code"]) for t in ticker_info_list]
+    st.sidebar.caption(f"인식: {', '.join(display_tickers)}")
 
 col_date1, col_date2 = st.sidebar.columns(2)
 start_date = col_date1.date_input("시작일", pd.to_datetime(settings["start_date"]))
@@ -131,7 +138,8 @@ for t in tickers:
         else:
             default = 50
         st.session_state[f"esg_{t}"] = default
-    esg_scores[t] = st.sidebar.slider(f"{t}", 0, 100, key=f"esg_{t}")
+    display_name = format_ticker_display(t)
+    esg_scores[t] = st.sidebar.slider(display_name, 0, 100, key=f"esg_{t}")
 
 rebalance_freq_options = ["M", "Q"]
 rebalance_idx = rebalance_freq_options.index(settings["rebalance_freq"]) if settings["rebalance_freq"] in rebalance_freq_options else 0
@@ -245,12 +253,13 @@ saved_holdings = settings.get("holdings", {})
 
 # 보유 현황 입력
 st.subheader("현재 보유 현황")
-hold_cols = st.columns(len(tickers))
+hold_cols = st.columns(len(tickers)) if tickers else [st.container()]
 current_holdings = {}
 for i, t in enumerate(tickers):
     saved_val = float(saved_holdings.get(t, 0.0))
+    display_name = format_ticker_display(t)
     current_holdings[t] = hold_cols[i].number_input(
-        f"{t}", value=saved_val, step=10000.0, format="%.0f", key=f"hold_{t}")
+        display_name, value=saved_val, step=10000.0, format="%.0f", key=f"hold_{t}")
 
 total_invest = sum(current_holdings.values())
 current_settings["holdings"] = {t: current_holdings[t] for t in tickers}
@@ -264,7 +273,8 @@ sum_col1.metric("현재 총 투자금", f"₩{total_invest:,.0f}")
 if total_invest > 0:
     current_weights = {t: current_holdings[t] / total_invest for t in tickers}
     max_ticker = max(current_weights, key=current_weights.get)
-    sum_col2.metric("최대 비중 종목", f"{max_ticker} ({current_weights[max_ticker]:.1%})")
+    max_ticker_display = format_ticker_display(max_ticker)
+    sum_col2.metric("최대 비중 종목", f"{max_ticker_display} ({current_weights[max_ticker]:.1%})")
 else:
     sum_col2.metric("최대 비중 종목", "-")
 
@@ -322,6 +332,7 @@ if st.button("📊 리밸런싱 계산", type="primary", key="rebalance_btn"):
 
         for order in orders:
             ticker = order["ticker"]
+            ticker_display = format_ticker_display(ticker)
             action = order["action"]
             amount = order["amount"]
             signal = order["signal"]
@@ -335,7 +346,7 @@ if st.button("📊 리밸런싱 계산", type="primary", key="rebalance_btn"):
             if action == "매수":
                 with st.container():
                     st.success(f"""
-                    {signal} **{ticker}** — **₩{amount:,.0f} 매수**
+                    {signal} **{ticker_display}** — **₩{amount:,.0f} 매수**
                     - 비중: {current_w:.1%} → {target_w:.1%} (+{target_w - current_w:.1%})
                     - 모델 신호: {action_signal} | 신뢰도: {confidence}% | 점수: {final_score:.0f}/100
                     - 이유: {reason}
@@ -343,13 +354,13 @@ if st.button("📊 리밸런싱 계산", type="primary", key="rebalance_btn"):
             elif action == "매도":
                 with st.container():
                     st.error(f"""
-                    {signal} **{ticker}** — **₩{amount:,.0f} 매도**
+                    {signal} **{ticker_display}** — **₩{amount:,.0f} 매도**
                     - 비중: {current_w:.1%} → {target_w:.1%} ({target_w - current_w:.1%})
                     - 모델 신호: {action_signal} | 신뢰도: {confidence}% | 점수: {final_score:.0f}/100
                     - 이유: {reason}
                     """)
             else:
-                st.info(f"⚪ **{ticker}** — 현재 비중 유지 ({current_w:.1%}, 거래 불필요)")
+                st.info(f"⚪ **{ticker_display}** — 현재 비중 유지 ({current_w:.1%}, 거래 불필요)")
 
         # 비중 계산 상세 (접기)
         with st.expander("🔍 비중 계산 상세 (디버그)"):
@@ -357,7 +368,7 @@ if st.button("📊 리밸런싱 계산", type="primary", key="rebalance_btn"):
             for t in tickers:
                 d = weight_details.get(t, {})
                 detail_data.append({
-                    "종목": t,
+                    "종목": format_ticker_display(t),
                     "최종점수": d.get("final_score", 50),
                     "액션": d.get("action", "-"),
                     "액션배수": d.get("action_mult", 1),
@@ -423,7 +434,7 @@ if st.session_state.prediction_result is not None:
                 action_icon = "🔴"
             else:
                 action_icon = "🟡"
-            st.subheader(f"{t}")
+            st.subheader(format_ticker_display(t))
             st.markdown(f"### {action_icon} {action}")
             st.metric("예측 방향", pred["direction"])
             st.metric("신뢰도", f"{pred['confidence']}%")
@@ -450,7 +461,7 @@ if st.session_state.prediction_result is not None:
         if not layers:
             continue
 
-        with st.expander(f"🔎 {t} — 3단계 파이프라인 상세", expanded=(t == pred_tickers[0])):
+        with st.expander(f"🔎 {format_ticker_display(t)} — 3단계 파이프라인 상세", expanded=(t == pred_tickers[0])):
             layer_tab1, layer_tab2, layer_tab3, layer_tab4 = st.tabs([
                 "📊 Stage 1: 시장 레짐", "🤖 Stage 2: ML 예측", "🛡️ Stage 3: 리스크", "🌐 Stage 4: 크로스 에셋"
             ])
@@ -633,7 +644,7 @@ if st.session_state.prediction_result is not None:
             key_issues = news.get("key_issues", [])
             stock_info = news.get("stock_info", {})
 
-            with st.expander(f"{summary_emoji} **{t}** — {summary} ({len(news_list)}건)", expanded=True):
+            with st.expander(f"{summary_emoji} **{format_ticker_display(t)}** — {summary} ({len(news_list)}건)", expanded=True):
                 # 종목 정보
                 sector = stock_info.get("sector", "")
                 industry = stock_info.get("industry", "")
@@ -778,7 +789,7 @@ if st.session_state.prediction_result is not None:
             if t not in predictions:
                 continue
             pred = predictions[t]
-            row = {"종목": t, "종합 판단": pred.get("action", "")}
+            row = {"종목": format_ticker_display(t), "종합 판단": pred.get("action", "")}
             row.update(pred["signals"])
             signal_data.append(row)
         st.table(pd.DataFrame(signal_data))
@@ -790,7 +801,7 @@ if st.session_state.prediction_result is not None:
 
     with chart_col1:
         fig_pred = go.Figure(data=[go.Pie(
-            labels=valid_tickers,
+            labels=[format_ticker_display(t) for t in valid_tickers],
             values=[predictions[t]["recommended_weight"] for t in valid_tickers],
             hole=0.4,
             marker_colors=["#2563eb", "#16a34a", "#eab308", "#dc2626", "#8b5cf6", "#ec4899"][:len(valid_tickers)],
@@ -824,7 +835,7 @@ if st.session_state.prediction_result is not None:
                 polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
                 height=350,
                 margin=dict(t=30, b=20),
-                title=f"{first_ticker} 4단계 점수"
+                title=f"{format_ticker_display(first_ticker)} 4단계 점수"
             )
             st.plotly_chart(fig_radar, width="stretch")
 
@@ -914,7 +925,7 @@ if st.session_state.explore_result is not None:
                 action_icon = "🔴"
             else:
                 action_icon = "🟡"
-            st.subheader(f"{t}")
+            st.subheader(format_ticker_display(t))
             st.markdown(f"### {action_icon} {action}")
             st.metric("예측 방향", pred["direction"])
             st.metric("신뢰도", f"{pred['confidence']}%")
@@ -941,7 +952,7 @@ if st.session_state.explore_result is not None:
             cat_scores = news.get("category_scores", {})
             stock_info = news.get("stock_info", {})
 
-            st.markdown(f"### {t}")
+            st.markdown(f"### {format_ticker_display(t)}")
 
             # 종목 정보
             sector = stock_info.get("sector", "")
@@ -987,7 +998,7 @@ if st.session_state.explore_result is not None:
             if t not in ex_predictions or t == "__meta__":
                 continue
             pred = ex_predictions[t]
-            row = {"종목": t, "종합 판단": pred.get("action", "")}
+            row = {"종목": format_ticker_display(t), "종합 판단": pred.get("action", "")}
             row.update(pred["signals"])
             signal_data.append(row)
         if signal_data:

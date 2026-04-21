@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 import json, os, traceback
-from backtest import run_backtest, predict_future, get_esg_scores
+from backtest import run_backtest, predict_future, get_esg_scores, optimize_layer_weights
 from rebalance_engine import calculate_optimal_weights, generate_rebalance_orders, calculate_expected_performance
 from news_engine import get_market_pulse, analyze_news_impact_on_portfolio
 
@@ -64,11 +64,43 @@ initial_capital = st.sidebar.number_input("초기 자본 (원)", value=settings[
 st.sidebar.subheader("분석 레이어 가중치")
 st.sidebar.caption("각 분석 레이어의 비중을 조절하세요")
 
+# 세션 상태로 가중치 관리
+if "auto_weights" not in st.session_state:
+    st.session_state.auto_weights = None
+
 saved_weights = settings.get("layer_weights", {"regime": 20, "ml": 40, "risk": 25, "cross_asset": 15})
+
+# 자동 최적화 결과가 있으면 적용
+if st.session_state.auto_weights is not None:
+    saved_weights = st.session_state.auto_weights
+
+# 자동 최적화 버튼
+if st.sidebar.button("🎯 가중치 자동 최적화", help="종목 데이터 기반 최적 가중치 계산"):
+    if len(tickers) > 0:
+        with st.sidebar:
+            with st.spinner("가중치 최적화 중..."):
+                try:
+                    opt_result = optimize_layer_weights(tickers, {t: 50 for t in tickers})
+                    opt_weights = opt_result["optimal_weights"]
+                    st.session_state.auto_weights = opt_weights
+                    st.toast(f"✅ 최적화 완료!", icon="🎯")
+                    st.sidebar.success(f"레짐:{opt_weights['regime']}% | ML:{opt_weights['ml']}% | 리스크:{opt_weights['risk']}% | 크로스:{opt_weights['cross_asset']}%")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"최적화 오류: {e}")
+    else:
+        st.sidebar.warning("종목을 먼저 입력하세요")
+
 w_regime = st.sidebar.slider("레짐 분석", 0, 50, saved_weights.get("regime", 20), help="HMM + Hurst 기반 시장 국면")
 w_ml = st.sidebar.slider("ML 예측", 0, 50, saved_weights.get("ml", 40), help="RF+GB 앙상블 예측")
 w_risk = st.sidebar.slider("리스크 필터", 0, 50, saved_weights.get("risk", 25), help="VaR/Sharpe 기반 리스크")
 w_cross = st.sidebar.slider("크로스 에셋", 0, 30, saved_weights.get("cross_asset", 15), help="VIX/달러/채권 시그널")
+
+# 자동 최적화 상태 초기화 (슬라이더 수동 변경 시)
+if st.session_state.auto_weights is not None:
+    current = {"regime": w_regime, "ml": w_ml, "risk": w_risk, "cross_asset": w_cross}
+    if current != st.session_state.auto_weights:
+        st.session_state.auto_weights = None
 
 total_weight = w_regime + w_ml + w_risk + w_cross
 if total_weight != 100:

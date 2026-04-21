@@ -487,3 +487,156 @@ def run_backtest(tickers, start_date, end_date, initial_capital, esg_scores,
         "mean_return": mean_return, "volatility": volatility_val,
         "sharpe_ratio": sharpe_ratio, "max_drawdown": max_drawdown, "weights_df": weights_df,
     }
+
+
+def optimize_layer_weights(tickers, esg_scores, lookback_days=120, method="grid"):
+    """
+    레이어 가중치 자동 최적화
+
+    각 레이어별 예측 정확도와 기여도를 분석하여 최적 가중치 계산
+
+    Args:
+        tickers: list - 종목 리스트
+        esg_scores: dict - ESG 점수
+        lookback_days: int - 분석 기간
+        method: str - 최적화 방법 ("grid" 또는 "performance")
+
+    Returns:
+        dict: 최적 가중치 및 분석 결과
+    """
+    from itertools import product
+
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=max(lookback_days + 200, 500))
+
+    # 가격 데이터 조회
+    raw = _fetch_price_data(
+        tuple(tickers),
+        start_date.strftime('%Y-%m-%d'),
+        end_date.strftime('%Y-%m-%d')
+    )
+    prices = raw["Close"].dropna(how="all")
+    if isinstance(prices, pd.Series):
+        prices = prices.to_frame(tickers[0])
+    prices = prices.sort_index()
+
+    # 크로스 에셋 데이터
+    cross_data = fetch_cross_asset_data(lookback_days)
+    cross_result = calculate_cross_asset_score(cross_data)
+    cross_score = cross_result["cross_asset_score"]
+
+    # 각 레이어별 점수 수집
+    layer_scores = {"regime": [], "ml": [], "risk": [], "cross_asset": []}
+    actual_returns = []
+
+    for ticker in tickers:
+        if ticker not in prices.columns:
+            continue
+        p = prices[ticker].dropna()
+        if len(p) < 60:
+            continue
+
+        # 각 레이어 분석
+        regime_result = analyze_regime(p)
+        regime_history = regime_result.get("regime_history", None)
+        ml_result = analyze_ml(p, regime_history=regime_history)
+        risk_result = analyze_risk(p, regime_result["regime_score"], ml_result["ml_score"], ml_result)
+
+        layer_scores["regime"].append(regime_result["regime_score"])
+        layer_scores["ml"].append(ml_result["ml_score"])
+        layer_scores["risk"].append(risk_result["risk_score"])
+        layer_scores["cross_asset"].append(cross_score)
+
+        # 실제 최근 수익률 (미래 성과 추정용)
+        recent_return = p.pct_change().iloc[-20:].mean() * 100 + 50  # 0-100 스케일
+        actual_returns.append(recent_return)
+
+    if not actual_returns:
+        return {
+            "optimal_weights": {"regime": 20, "ml": 40, "risk": 25, "cross_asset": 15},
+            "method": "default",
+            "message": "데이터 부족으로 기본 가중치 사용"
+        }
+
+    # 각 레이어의 예측력 계산 (상관계수 기반)
+    correlations = {}
+    for layer, scores in layer_scores.items():
+        if len(scores) >= 2:
+            corr = np.corrcoef(scores, actual_returns)[0, 1]
+            correlations[layer] = max(0, corr) if not np.isnan(corr) else 0
+        else:
+            correlations[layer] = 0.25
+
+    # 각 레이어의 일관성 (표준편차 기반 - 안정적일수록 높은 점수)
+    consistency = {}
+    for layer, scores in layer_scores.items():
+        if len(scores) >= 2:
+            std = np.std(scores)
+            consistency[layer] = max(0, 1 - std / 50)  # 변동성이 낮을수록 높은 점수
+        else:
+            consistency[layer] = 0.5
+
+    # 종합 점수 = 상관계수 * 0.7 + 일관성 * 0.3
+    combined_scores = {
+        layer: correlations[layer] * 0.7 + consistency[layer] * 0.3
+        for layer in layer_scores.keys()
+    }
+
+    # 정규화하여 가중치 계산
+    total_score = sum(combined_scores.values())
+    if total_score > 0:
+        raw_weights = {
+            layer: (score / total_score) * 100
+            for layer, score in combined_scores.items()
+        }
+    else:
+        raw_weights = {"regime": 25, "ml": 25, "risk": 25, "cross_asset": 25}
+
+    # 범위 제한 적용 (각 레이어 최소 5%, 최대 50%)
+    min_weight, max_weight = 5, 50
+    adjusted_weights = {}
+    for layer, weight in raw_weights.items():
+        if layer == "cross_asset":
+            adjusted_weights[layer] = max(5, min(30, int(round(weight))))
+        else:
+            adjusted_weights[layer] = max(min_weight, min(max_weight, int(round(weight))))
+
+    # 합계 100으로 정규화
+    total = sum(adjusted_weights.values())
+    if total != 100:
+        diff = 100 - total
+        # ML에 차이 적용 (가장 유연한 레이어)
+        adjusted_weights["ml"] = max(min_weight, min(max_weight, adjusted_weights["ml"] + diff))
+
+        # 여전히 100이 아니면 다른 레이어에서 조정
+        total = sum(adjusted_weights.values())
+        if total != 100:
+            diff = 100 - total
+            for layer in ["regime", "risk"]:
+                if adjusted_weights[layer] + diff >= min_weight and adjusted_weights[layer] + diff <= max_weight:
+                    adjusted_weights[layer] += diff
+                    break
+
+    # 최종 확인 및 강제 정규화
+    total = sum(adjusted_weights.values())
+    if total != 100:
+        scale = 100 / total
+        adjusted_weights = {k: int(round(v * scale)) for k, v in adjusted_weights.items()}
+        diff = 100 - sum(adjusted_weights.values())
+        if diff != 0:
+            adjusted_weights["ml"] += diff
+
+    return {
+        "optimal_weights": adjusted_weights,
+        "method": method,
+        "correlations": {k: round(v, 3) for k, v in correlations.items()},
+        "consistency": {k: round(v, 3) for k, v in consistency.items()},
+        "combined_scores": {k: round(v, 3) for k, v in combined_scores.items()},
+        "message": "레이어별 예측 정확도 및 일관성 기반 최적화 완료",
+        "details": {
+            "regime": f"상관계수: {correlations['regime']:.2f}, 일관성: {consistency['regime']:.2f}",
+            "ml": f"상관계수: {correlations['ml']:.2f}, 일관성: {consistency['ml']:.2f}",
+            "risk": f"상관계수: {correlations['risk']:.2f}, 일관성: {consistency['risk']:.2f}",
+            "cross_asset": f"상관계수: {correlations['cross_asset']:.2f}, 일관성: {consistency['cross_asset']:.2f}",
+        }
+    }

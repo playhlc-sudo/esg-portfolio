@@ -2,6 +2,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from itertools import product
 import logging
 import warnings
 import streamlit as st
@@ -504,8 +505,6 @@ def optimize_layer_weights(tickers, esg_scores, lookback_days=120, method="grid"
     Returns:
         dict: 최적 가중치 및 분석 결과
     """
-    from itertools import product
-
     end_date = datetime.now()
     start_date = end_date - timedelta(days=max(lookback_days + 200, 500))
 

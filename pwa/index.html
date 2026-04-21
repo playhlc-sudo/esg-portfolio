@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#FF4B4B">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ESG 백테스트">
+
+  <title>ESG 포트폴리오 백테스트</title>
+
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-152.png">
+  <link rel="icon" type="image/png" href="icons/icon-96.png">
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0E1117;
+      color: #FAFAFA;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #FF4B4B 0%, #FF6B6B 100%);
+      padding: 20px;
+      text-align: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .header h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+    }
+
+    .container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .loading {
+      text-align: center;
+    }
+
+    .spinner {
+      width: 50px;
+      height: 50px;
+      border: 4px solid #333;
+      border-top-color: #FF4B4B;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 20px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .app-frame {
+      width: 100%;
+      height: calc(100vh - 70px);
+      border: none;
+      background: #0E1117;
+    }
+
+    .btn {
+      background: linear-gradient(135deg, #FF4B4B 0%, #FF6B6B 100%);
+      color: white;
+      border: none;
+      padding: 15px 40px;
+      font-size: 1.1rem;
+      border-radius: 10px;
+      cursor: pointer;
+      margin-top: 20px;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 20px rgba(255, 75, 75, 0.4);
+    }
+
+    .install-prompt {
+      display: none;
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
+      right: 20px;
+      background: #1E1E1E;
+      padding: 20px;
+      border-radius: 15px;
+      box-shadow: 0 5px 30px rgba(0,0,0,0.5);
+      z-index: 1000;
+    }
+
+    .install-prompt.show {
+      display: block;
+      animation: slideUp 0.3s ease;
+    }
+
+    @keyframes slideUp {
+      from {
+        transform: translateY(100%);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    .install-prompt h3 {
+      margin-bottom: 10px;
+    }
+
+    .install-prompt p {
+      color: #999;
+      margin-bottom: 15px;
+    }
+
+    .install-buttons {
+      display: flex;
+      gap: 10px;
+    }
+
+    .install-buttons button {
+      flex: 1;
+      padding: 12px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+
+    .btn-install {
+      background: #FF4B4B;
+      color: white;
+    }
+
+    .btn-later {
+      background: #333;
+      color: #999;
+    }
+
+    .offline-notice {
+      display: none;
+      background: #FF6B6B;
+      color: white;
+      padding: 10px;
+      text-align: center;
+      font-size: 0.9rem;
+    }
+
+    .offline-notice.show {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="offline-notice" id="offlineNotice">
+    오프라인 상태입니다. 일부 기능이 제한될 수 있습니다.
+  </div>
+
+  <div class="header">
+    <h1>ESG 포트폴리오 백테스트</h1>
+  </div>
+
+  <div class="container" id="mainContainer">
+    <div class="loading">
+      <div class="spinner"></div>
+      <p>앱을 불러오는 중...</p>
+      <p style="color: #666; margin-top: 10px; font-size: 0.9rem;">
+        Streamlit 서버에 연결 중입니다
+      </p>
+    </div>
+  </div>
+
+  <div class="install-prompt" id="installPrompt">
+    <h3>앱 설치</h3>
+    <p>홈 화면에 추가하여 앱처럼 사용하세요!</p>
+    <div class="install-buttons">
+      <button class="btn-later" onclick="dismissInstall()">나중에</button>
+      <button class="btn-install" onclick="installApp()">설치하기</button>
+    </div>
+  </div>
+
+  <script>
+    // Configuration - Update this URL after deploying to Streamlit Cloud
+    const STREAMLIT_URL = 'http://10.122.7.10:8503';
+
+    let deferredPrompt;
+
+    // Register service worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js')
+        .then(reg => console.log('Service Worker registered'))
+        .catch(err => console.log('Service Worker registration failed:', err));
+    }
+
+    // Handle install prompt
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+
+      // Show install prompt after 3 seconds
+      setTimeout(() => {
+        document.getElementById('installPrompt').classList.add('show');
+      }, 3000);
+    });
+
+    function installApp() {
+      const prompt = document.getElementById('installPrompt');
+      prompt.classList.remove('show');
+
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then((result) => {
+          if (result.outcome === 'accepted') {
+            console.log('App installed');
+          }
+          deferredPrompt = null;
+        });
+      }
+    }
+
+    function dismissInstall() {
+      document.getElementById('installPrompt').classList.remove('show');
+    }
+
+    // Online/Offline detection
+    window.addEventListener('online', () => {
+      document.getElementById('offlineNotice').classList.remove('show');
+    });
+
+    window.addEventListener('offline', () => {
+      document.getElementById('offlineNotice').classList.add('show');
+    });
+
+    // Load Streamlit app
+    function loadStreamlitApp() {
+      if (STREAMLIT_URL === 'YOUR_STREAMLIT_CLOUD_URL') {
+        document.getElementById('mainContainer').innerHTML = `
+          <div style="text-align: center; padding: 40px;">
+            <h2 style="margin-bottom: 20px;">설정 필요</h2>
+            <p style="color: #999; margin-bottom: 20px;">
+              Streamlit Cloud에 앱을 배포한 후<br>
+              index.html의 STREAMLIT_URL을 업데이트하세요.
+            </p>
+            <div style="background: #1E1E1E; padding: 20px; border-radius: 10px; text-align: left;">
+              <p style="color: #FF4B4B; margin-bottom: 10px;">배포 순서:</p>
+              <ol style="color: #999; padding-left: 20px; line-height: 1.8;">
+                <li>GitHub에 코드 업로드</li>
+                <li>streamlit.io/cloud 에서 배포</li>
+                <li>배포된 URL을 index.html에 입력</li>
+                <li>PWA 파일을 웹서버에 호스팅</li>
+              </ol>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      document.getElementById('mainContainer').innerHTML = `
+        <iframe
+          class="app-frame"
+          src="${STREAMLIT_URL}"
+          allow="clipboard-write"
+        ></iframe>
+      `;
+    }
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+      setTimeout(loadStreamlitApp, 1000);
+    });
+  </script>
+</body>
+</html>
